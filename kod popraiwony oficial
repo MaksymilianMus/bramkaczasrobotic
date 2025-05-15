@@ -1,0 +1,121 @@
+#include <WiFi.h>
+
+const int irSensorPin1 = 8;
+const int irSensorPin2 = 2;  
+const int resetButtonPin = 5;
+const int ledPin = 9;
+
+unsigned long startTime = 0;
+unsigned long endTime = 0;
+bool counting = false;
+bool finished = false;
+
+const char* apSsid = "LineFollower-GATE";
+const char* apPassword = "line1234"; 
+
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(irSensorPin1, INPUT);
+  pinMode(irSensorPin2, INPUT);
+  pinMode(resetButtonPin, INPUT_PULLUP);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW);
+
+  Serial.println("Tworzenie sieci WiFi (Access Point)...");
+  WiFi.softAP(apSsid, apPassword);
+
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("Adres IP ESP: ");
+  Serial.println(myIP);
+
+  server.begin();
+  Serial.println("Serwer HTTP działa");
+}
+
+void loop() {
+  int sensorState1 = digitalRead(irSensorPin1);
+  int sensorState2 = digitalRead(irSensorPin2);
+  int resetButtonState = digitalRead(resetButtonPin);
+
+  if (sensorState1 == LOW && !counting && !finished) {
+    startTime = millis();
+    counting = true;
+    finished = false;
+    Serial.println("START");
+  }
+
+  if (sensorState2 == LOW && counting) {
+    endTime = millis();
+    counting = false;
+    finished = true;
+    Serial.print("META");
+    Serial.print((endTime - startTime) / 1000);
+    Serial.print(" s ");
+    Serial.print((endTime - startTime) % 1000);
+    Serial.println(" ms");
+  }
+
+  if (sensorState1 == LOW && finished) {
+    startTime = millis();
+    counting = true;
+    finished = false;
+    Serial.println("START Pierwszy czujnik-Reset");
+  }
+
+  if (resetButtonState == LOW) {
+    startTime = 0;
+    endTime = 0;
+    counting = false;
+    finished = false;
+    Serial.println("RESET");
+  }
+
+  if (sensorState1 == LOW || sensorState2 == LOW) {
+    digitalWrite(ledPin, HIGH);
+  } else {
+    digitalWrite(ledPin, LOW);
+  }
+
+  WiFiClient client = server.available();
+  if (client) {
+    String request = client.readStringUntil('\r');
+    client.flush();
+
+    if (request.indexOf("/sensor") != -1) {
+      unsigned long duration = (counting) ? millis() - startTime : (finished ? endTime - startTime : 0);
+      String json = "{";
+      json += "\"counting\":" + String(counting ? "true" : "false") + ",";
+      json += "\"duration\":" + String(duration);
+      json += "}";
+
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: application/json");
+      client.println("Connection: close");
+      client.println();
+      client.println(json);
+    } else {
+      String html = "<!DOCTYPE html><html><head><title>Bramka</title>";
+      html += "<style>body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; background-color: black; color: white; }";
+      html += "#timer { font-size: 140px; color: #4CAF50; margin-top: 100px; }";
+      html += "#logo-left { position: absolute; top: 20px; left: 10px; height: 90px; }";
+      html += "#logo-right { position: absolute; top: 15px; right: 25px; height: 115px; }";
+      html += "</style></head><body>";
+      html += "<img id='logo-left' src='https://zapodaj.net/images/9b6155e4c9e64.png' alt='Logo Left'>";
+      html += "<img id='logo-right' src='https://zstrybnik.pl/img/logo.svg' alt='Logo Right'>";
+      html += "<h1>LineFollower</h1>";
+      html += "<div id='timer'>00:00:00</div>";
+      html += "<script>let interval = setInterval(function() { fetch('/sensor').then(response => response.json()).then(data => { let duration = data.duration; let minutes = Math.floor(duration / 60000); let seconds = Math.floor((duration % 60000) / 1000); let centiseconds = Math.floor((duration % 1000) / 10); document.getElementById('timer').innerText = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}:${String(centiseconds).padStart(2, '0')}`; }); }, 30);</script>";
+      html += "</body></html>";
+
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/html");
+      client.println("Connection: close");
+      client.println();
+      client.println(html);
+    }
+    delay(10);
+    client.stop();
+  }
+}
